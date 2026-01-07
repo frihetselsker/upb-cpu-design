@@ -11,22 +11,37 @@ _boot:                    /* x0  = 0    0x000 */
 
     la x6, variable
     lw x8, 0(x6)
-    addi x6, x6, 4
-    
-    la x6, count
+	la x6, count
+    la x7, display
+    lw x7, 0(x7)
     lb x8, 0(x6)
-    addi x9, x0, 0
+    addi x9, x9, 0
 _counter:
-	addi x9, x9, 1
+	sb x9, 0(x7)
+    addi x9, x9, 1
     addi x8, x8, -1
     bne x8, x0, _counter
-	
-/*Write to the screen*/    
-    
-
+ 	la x6, screen
+    lw x6, 0(x6)
+    la x9, hello
+    lb x8, 0(x9)
+_writer:
+    sb x8, 0(x6)
+    addi x9, x9, 1
+    lb x8, 0(x9)
+    bne x8, x0, _writer
+    nop
+    nop
+    nop
 .data
 variable:
-	.word 0xdeadbeef
+ .word 0xdeadbeef
+screen:
+ .word 0x80000000
+display:
+ .word 0x80000001
 count:
-	.byte 0xa
-                    
+ .byte 0x26
+ .align 2
+hello:
+ .asciz "Wake up, Neo..."
