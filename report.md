@@ -4,6 +4,8 @@ This project was made by Roi Bachynskyi, student from 1231EB. I have chosen this
 
 The main purpose of it is to emulate a RISC-V 32I CPU so that it is possible to write RISC-V assembly code, i.e. it "understands" RISC-V ISA, pass it to the [assembler](https://riscvasm.lucasteske.dev/#), insert the necessary bytes to the instruction memory and the data memory, and use it.
 
+This project is based on [Holy Core](https://github.com/0BAB1/HOLY_CORE_COURSE/blob/master/0_single_cycle_edition/single_cycle_edition.md) GitHub page and this [RISC-V Logisim playlist](https://www.youtube.com/watch?v=Z7LHCMTc0gI&list=PLM8YDhk_PWu0pdBNHMMSiBm8CEkCQ94T8) on YouTube. 
+
 ![full_cpu_image](assets/cpu.png) 
 
 The report is split into several categories where every component is studied in all details.
@@ -91,6 +93,9 @@ RV32I has a **load–store architecture**, i.e there are separate instructions f
 I-type instructions perform operations only on 12-bit immediates, thus making sense for U-type instructions.
 
 - **J-type** = jump type, adds an immediate value to the PC
+
+> [!NOTE]  
+For all the intructions, go to [RISC-V ISA document](https://www.cs.sfu.ca/~ashriram/Courses/CS295/assets/notebooks/RISCV/RISCV_CARD.pdf)
 
 ## Register File
 
@@ -268,11 +273,11 @@ Control logic is the most important component in the CPU, it controls how every 
 ![control logic](assets/cl.png)
 
 **Inputs**:
-- op
-- func3
-- func7
-- alu_zero
-- alu_lb
+- op = `opcode` that detects the instruction type
+- func3 = `funct3` , main specifier of the function
+- func7 = `funct7`, secondary specifier of the function
+- alu_zero = a kind of flag that is used in branching (if the result is zero)
+- alu_lb = a kind of flag that is used in branching (if the first operand is larger or not)
 
 **Outputs**:
 - alu_control
@@ -285,17 +290,173 @@ Control logic is the most important component in the CPU, it controls how every 
 - second_add_src
 - data_valid
 
+The outputs will be explained in the following subsections.
+
 ### Instruction Type Detection
 
+![itd](assets/itd.png)
+
+| `opcode`       | Instruction Type   |
+| ----------- | ----------- |
+| 0110011      | R-type|
+| 0010011      | I-type|
+| 0000011      | Load type|
+| 0100011      | S-type|
+| 1100011      | B-type|
+| 1101111      | J-type|
+| 1100111      |`jalr` type|
+| 0110111      |`lui` type|
+| 0010111     |`auipc` type|
+
+Despite the fact that there are 5 types of instructions, in RV32I there are 9 unique types of opcodes which are presented in the data. After detecting the instruction, it is possible to understand what to do with other outputs.
+
 ### Immediate Source
+| Instruction Type | `imm_src`   |
+| ----------- | ----------- |
+| load-type   | 000 |
+| I-type   | 000 |
+| S-type   | 001 |
+| B-type   | 010 |
+| J-type   | 011 |
+| U-type   | 100 |
+
+![imm_src](assets/imm_src.png)
+
+Here a priority encoder is used to output the `imm_src` based on the instruction type.
+
+The `imm_src` is an input for [Sign Extender](#sign-extender), which decides how immediate is placed in the instruction and serves as a select for MUX inside it.
+
+![imm_src_input](assets/se.png)
 
 ### ALU
 
+| Instruction Type | `alu_op`|
+| ----------- | ----------- |
+| load-type OR S-type | 00 |
+| B-type | 01 |
+| I-type OR R-type | 10 |
+
+Typically, ALU can work in 3 modes, i.e. 1) compute addresses for load-store intructions, 2) subtract register values to define what to do: to branch or not, 3) math operations. To distinguish these operations, `alu_op` is used.
+
+It is implemented using priority encoders and decoders. Based on the `alu_op`, the appropriate operation mode is enabled.
+
+> [!NOTE]  
+It is easier and more optimal to make it with OR gate, but I wanted to make sure that no two instruction types shoot (theoretically, it is impossible, but to be sure).
+
+![alu_1](assets/alu1_control.png)
+
+Load-store mode always returns `add` (i.e. 0000) as an operation to the `alu_ctrl`.
+
+Branch mode returns 3 operations based on the branching instruction (see more at [Branching](#branching)):
+| Instruction | `alu_ctrl`|
+| ----------- | ----------- |
+| `beq` or `bne` | 0001 (`sub` = subtract) |
+| `blt` or `bge` | 0101 (`slt` = set less than) |
+| `bltu` or `bgeu` | 0111 (`sltu` = set less than unsigned) |
+
+Math operation is as follows:
+
+| Instruction | funct3 | {op_5, funct7_5} | `alu_ctrl`|
+| ----------- | ----------- | ----------- | ----------- |
+| `add` OR `addi` | 000 | 00, 01, 10 OR xx | 0000|
+| `sub` | 000      | 11 | 0001|
+| `and` OR `andi` | 010 | x | 0010|
+| `or` OR `ori` | 110 | x | 0011|
+| `sll` OR `slli` | 001 | x0 OR imm[5:11]=0x00 | 0100|
+| `slt` OR `slti` | 010 | x | 0101|
+| `srl` OR `srli` | 101 | x0 OR imm[5:11]=0x00 | 0110|
+| `sltu` OR `sltiu` | 011 | x | 0111|
+| `xor` OR `xori` | 100 | x | 1000|
+| `sra` OR `srai` | 010 | x1 OR imm[5:11]=0x20 | 1001|
+
+> [!NOTE]  
+x means any value. For every entry with OR each instruction treats `{op_5, funct7_5}` depending on the position in OR (e.g. `add` OR `addi` => `add` needs 00,01,10 only for `{op_5, funct7_5}` whereas `addi` takes 'don't care'). There is a mix of I-type and R-type instructions here.
+
+![alu_ctrl_0](assets/alu_ctrl_0.png)
+![alu_ctrl_1](assets/alu_ctrl_1.png)
+
+There are conditional buffers that can be activated by specified values so that only one constant can be output to the `alu_ctrl` based on `funct3` and other components.
+
+> [!IMPORTANT]  
+There is a way to implement such things using ROM instead of hardwired logic ([video](https://www.youtube.com/watch?v=CTBdFIsQc4M&list=PLM8YDhk_PWu0pdBNHMMSiBm8CEkCQ94T8&index=7)). Actually, ROMs were commonly used to implement control units. But I decided to leave the implementation with simple gates.
+
 ### Second Add Source
+
+![sas](assets/sas.png)
+
+> [!IMPORTANT]  
+The tunnel `branch_val_t` has an unappropriate name, it should have had a better name because it is not only about branching and its value is also written to registers, I haven't come up with a better idea back then and left it as-is.
+
+There are some operations that use immediates and do bypass ALU usign a separate adder. They are:
+
+| Instruction Type | `scnd_add_src` | Function |
+| ----------- | ----------- | ----------- |
+| B-type OR `auipc` type OR J-type | 00 | `PC += imm` |
+| `lui` type   | 01 | `rd = imm << 12` |
+| `jalr` type   | 10 | `PC = rs1 + imm` |
+
+The first type just adds new immediates to the PC, the second type takes nothing and is just preparation of the upper 20 bits for the destination register, and the last type is adding an immediate to the source register. A priority encoder is used to output the `scnd_add_src` based on the intruction type.
+
+![sas](assets/sas_inside.png)
 
 ### Branching
 
-### Write Back & Jumping
+Everything that adjusts the PC in some way is described in this section, i.e. B-type instructions, J-type instructions, `pc_src` and so on.
+
+![branch_pc](assets/b_pc.png)
+
+Tunnel `branch_val_t` determines what value to write into PC and tunnel `pc_src_t` selects what value to write: either just add 4 to PC or a new value. The data is written only in case all the conditions are fulfilled.
+
+Tunnel `pc_src_t` is 1 if and only if:
+- B-type instruction in executed and the ALU flag has the appropriate value
+- J-type instruction
+- `jalr` instruction
+
+Other instructions set `pc_src_t` value as 0 so that the subsequent instruction is used.
+
+| Instruction | `funct3` | Function | ALU Operation | ALU Flag |
+| ----------- | ----------- | ----------- | ----------- | ----------- |
+| `beq` | 0x0 | `if (rs1 == rs2) PC += imm` | 0x1 | `alu_zero == 1` |
+| `bne` | 0x1 | `if (rs1 != rs2) PC += imm` | 0x1 | `alu_zero == 1` |
+| `blt` | 0x4 | `if (rs1 < rs2) PC += imm` | 0x5 | `alu_last_bit == 1` |
+| `bge` | 0x5 | `if (rs1 >= rs2) PC += imm` | 0x5 | `alu_last_bit == 0` |
+| `bltu` | 0x6 | `if (rs1 < rs2) PC += imm` (Unsigned) | 0x7 | `alu_last_bit == 1` |
+| `bgeu` | 0x7 | `if (rs1 >= rs2) PC += imm` (Unsigned) | 0x7 | `alu_last_bit == 0` |
+
+J-type instruction and `jalr` don't depend on any conditions, just set the value for the PC.
+
+This is how it was implemented in Logisim.
+
+![branch_inside](assets/branching_inside.png)
+
+### Write Back
+
+There are several sources of new values that can be written to the destination register.
+
+![wb](assets/wb.png)
+
+| Instruction Type | `wb_src` | Function |
+| ----------- | ----------- | ----------- |
+| I-type OR R-type OR B-type OR S-type | 00 | Write the result of ALU operation |
+| load-type | 01 | Write the value obtained from the Reader |
+| J-type OR `jalr` | 10 | Save the `PC + 4` value |
+| U-type | 11 | Write either `imm << 12` OR `PC + (imm << 12)` |
+
+It was implemented using priority encoder. For value 00, it was simplified a bit (no I-type OR R-type OR B-type OR S-type there), NOT load-type is sufficient because priority encoded is sufficient to handle several values and chooses the largest among the inputs.
+
+![wb_inside](assets/wb_inside.png)
+
+### Other important control outputs
+
+![outputs](assets/outputs.png)
+
+- `data_valid` = It is 1 if and only if the instruction is not of load type. In this way the data memory check is separated from the control logic as it is handled in [Reader](#reader).
+  
+- `reg_w` = It is 1 if and only if the instruction is neither of S-type nor of B-type. Other types write to the register.
+  
+  ![dv](assets/data_validity.png)
+
+- `mem_write` = It is 1 if and only if the instruction is of S-type. It enables `we` flag in [Data Memory](#data-memory) and allows writing to memory.
 
 ## I/O
 As it was stated in the section [Data Memory](#data-memory), this project uses Memory-Mapped I/O, i.e in order to read or write (in this case only write) to I/O devices.
@@ -318,9 +479,10 @@ For digital display, there is a register that keeps the last written value, ther
 > [!IMPORTANT]  
 The right shift register is used at the digital display because any time the address 1xx..xx1 is accessed, load-store decoder shifts by 8 bits to the left, to mitigate this, the right shifter was added.
 
-## Program
+## Demo
+### Program
 
-To demostrate the capabilities of the project, a little RISC-V program was written that writes data to registers, makes operations with them, reads data from RAM, counts up to 0x26 on the digital display and writes a text on the screen.
+To demostrate the capabilities of the project, a little RISC-V program was written that writes data to registers, makes operations with them, reads data from RAM, counts up to 0x25 on the digital display and writes a text on the screen.
 
 Here is the code:
 ```assembly
@@ -337,7 +499,7 @@ _boot:                    /* x0  = 0    0x000 */
 /*Fetch data from memory and prepare for the counter loop*/
     la x6, variable
     lw x8, 0(x6)
-	la x6, count
+	  la x6, count
     la x7, display
     lw x7, 0(x7)
     lb x8, 0(x6)
@@ -425,10 +587,23 @@ Also, to assemble the program properly, the following linker script should be ut
   }
 ```
 
-The assembler I used is [RISC-V Online Assembler](https://riscvasm.lucasteske.dev/). After assembling it is necessary to load binary instructions to the instruction memory (to all of 4 ROMs) and to load data to the data memory, every byte should be placed at the same place in the corresponding RAM chip and address should be stepped by 4, i.e. every fourth byte at every RAM chip is written.
+The assembler I used is [RISC-V Online Assembler](https://riscvasm.lucasteske.dev/). After assembling it is necessary to load binary instructions to the instruction memory (to all of 4 ROMs) and to load data to the data memory, every byte should be placed at the same place in the corresponding RAM chip and address should be stepped by 4, i.e. every fourth byte at every RAM chip (`mod 4 == 0`) is written.
 
+### In Action
+
+![im_in_action](assets/im.png)
+
+![dm_in_action](assets/dm_action.png)
+
+![adds_in_action](assets/adds.png)
+
+![count_in_progress](assets/count_in_progress.png)
+
+![count_finish](assets/count_finish.png)
+
+![text_in_action](assets/text_in_action.png)
+
+![text_finish](assets/text_finish.png)
 
 ## Conclusions
 The goals of this project are fulfiled, I learnt the RISC-V architecture and CPU design overall, it was a great experience.
-
-This project is based on [Holy Core](https://github.com/0BAB1/HOLY_CORE_COURSE/blob/master/0_single_cycle_edition/single_cycle_edition.md) GitHub page and this [RISC-V Logisim playlist](https://www.youtube.com/watch?v=Z7LHCMTc0gI&list=PLM8YDhk_PWu0pdBNHMMSiBm8CEkCQ94T8) on YouTube. 
